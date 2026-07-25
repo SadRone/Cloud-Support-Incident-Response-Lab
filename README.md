@@ -677,3 +677,183 @@ The next stage of the project will include:
 13. Documenting root causes and preventive actions
 
 These tasks will be added after the initial environment has been validated.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Validation & Monitoring
+
+
+<img width="1472" height="422" alt="image" src="https://github.com/user-attachments/assets/4daa5efb-5f0b-4020-992f-072949f731cf" />
+
+- docker compose ps showed the Nginx container as running but unhealthy.
+
+- The actual customer impact had not yet been confirmed.
+
+
+Ngingx Health Endpoint
+<img width="1467" height="492" alt="image" src="https://github.com/user-attachments/assets/5d8740aa-d056-4a74-90cd-1d77d57273f8" />
+
+Application Health Endpoint
+<img width="1198" height="433" alt="image" src="https://github.com/user-attachments/assets/7ab22bc7-780f-4b4f-945f-74c002e9903e" />
+
+The most important check on the details for docker health check failure
+<img width="1808" height="957" alt="image" src="https://github.com/user-attachments/assets/3cce7697-82dc-4c46-bb89-760d63e6d8ba" />
+
+
+
+## Resolving the Nginx Health-Check Failure
+
+During the initial environment validation, `docker compose ps` reported the Nginx container as `unhealthy`, even though the container itself was still running.
+
+To determine whether this was a real service outage, I tested the public application endpoint, the Nginx health endpoint, the application health endpoint, and the application readiness endpoint:
+
+```bash
+curl -i http://localhost:8080/
+curl -i http://localhost:8080/nginx-health
+curl -i http://localhost:8080/health
+curl -i http://localhost:8080/ready
+```
+
+All endpoints returned `HTTP 200 OK`. The readiness endpoint also confirmed that Redis was available and that the application status was `READY`.
+
+This showed that Nginx was successfully processing requests and forwarding traffic to the application. The problem was therefore limited to Docker's internal health check rather than the user-facing service.
+
+I inspected the Nginx health-check history with the following command:
+
+```bash
+docker inspect csl-nginx --format='{{json .State.Health}}' | python3 -m json.tool
+```
+
+Docker reported repeated health-check failures with the following output:
+
+```text
+wget: can't connect to remote host: Connection refused
+```
+
+The health-check failure was caused by the target configured in `compose.yml`. The probe used `localhost`, but the request did not successfully connect to the Nginx listener from inside the container.
+
+The original configuration was:
+
+```yaml
+healthcheck:
+  test: ["CMD", "wget", "-qO-", "http://localhost/nginx-health"]
+  interval: 10s
+  timeout: 3s
+  retries: 5
+```
+
+I updated the health-check target to use the explicit IPv4 loopback address:
+
+```yaml
+healthcheck:
+  test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+  interval: 10s
+  timeout: 3s
+  retries: 5
+```
+
+After modifying `compose.yml`, I validated the Docker Compose configuration:
+
+```bash
+docker compose config --quiet
+```
+
+I then recreated only the Nginx container so that the updated health-check configuration would be applied:
+
+```bash
+docker compose up -d --force-recreate --no-deps nginx
+```
+
+After waiting for the health check to run, I verified the Nginx container status:
+
+```bash
+docker compose ps nginx
+docker inspect csl-nginx --format='{{.State.Health.Status}}'
+```
+
+The Nginx container status changed from `unhealthy` to `healthy`.
+
+Finally, I ran the complete status validation script:
+
+```bash
+bash scripts/status.sh
+```
+
+The final validation confirmed that the environment was operating normally:
+
+```text
+Nginx container: healthy
+Application container: healthy
+Redis container: healthy
+Nginx health endpoint: HTTP 200
+Application health endpoint: HTTP 200
+Application readiness endpoint: HTTP 200
+Prometheus health endpoint: HTTP 200
+Grafana health endpoint: HTTP 200
+```
+
+This incident was classified as a Docker health-check false negative rather than a customer-facing outage. The application remained available throughout the investigation, but Docker incorrectly reported Nginx as unhealthy because the internal health probe was misconfigured.
+
+The troubleshooting process demonstrated the importance of checking user-facing availability, container status, internal health-check output, and service configuration separately before concluding that a production service is unavailable.
+
+
+<img width="1475" height="687" alt="image" src="https://github.com/user-attachments/assets/4d75fef0-f183-4f43-8faf-9e97399d39b5" />
+
+<img width="1367" height="50" alt="image" src="https://github.com/user-attachments/assets/c5609d49-0395-4774-8a37-4c06bd0b7725" />
+
+<img width="1350" height="70" alt="image" src="https://github.com/user-attachments/assets/9dac44a6-24d5-4105-adb0-7b41bd977337" />
+
+<img width="1471" height="186" alt="image" src="https://github.com/user-attachments/assets/36f43878-90ea-4330-bd06-94a14f881130" />
+
+<img width="1353" height="462" alt="image" src="https://github.com/user-attachments/assets/f1169fca-17d4-4fd5-85a5-87d58868bfd6" />
+
+<img width="1185" height="211" alt="image" src="https://github.com/user-attachments/assets/fbe92fce-e4c6-49bc-bc9d-fcd6d5764264" />
+
+
+
+
+
+## Incident 00: Nginx Health Check False Negative
+
+During the initial validation of the environment, the Nginx container was shown as `unhealthy` in the output of `docker compose ps`, even though the container itself was still running. This indicated that Docker’s internal health check was failing, but it did not immediately prove that the application was unavailable to users.
+
+To determine whether there was an actual service outage, I tested the main application endpoint, the Nginx health endpoint, the application health endpoint, and the readiness endpoint. All four requests returned `HTTP 200 OK`. The `/ready` endpoint also confirmed that the Redis dependency was available and that the application status was `READY`. These results showed that Nginx was successfully receiving requests, forwarding traffic to the application, and returning valid responses to users.
+
+I then inspected the Docker health-check history by running `docker inspect` against the Nginx container. Docker reported the container status as `unhealthy`, with a failing streak of 65 consecutive checks. Each failed check returned exit code `1` with the message `wget: can't connect to remote host: Connection refused`. This confirmed that the unhealthy status was caused by the internal Docker health probe rather than by a complete Nginx service outage.
+
+The incident was therefore classified as a health-check false negative rather than a customer-facing availability incident. There was no confirmed customer impact because all externally tested endpoints continued to return successful responses. However, the incorrect health status created an operational risk because it could trigger false alerts, cause an automated deployment to be marked as failed, or lead an engineer to restart a service that was still functioning correctly.
+
+The evidence suggests that the Docker health-check target was using an incorrect internal address, interface, or port. The next troubleshooting step is to test the health endpoint from inside the Nginx container using both `localhost` and the explicit IPv4 loopback address `127.0.0.1`. The active health-check configuration must also be inspected before making any changes. The exact root cause should only be recorded after this internal comparison confirms why the health probe receives a connection-refused response.
+
+This incident demonstrates that a running container, a healthy user-facing service, and a successful Docker health check are separate conditions. A reliable investigation must compare customer-facing requests, application readiness, container status, internal probe output, and service configuration before concluding that an outage has occurred.
+
+
+The root cause was confirmed as an incorrect loopback target in the Docker health-check configuration. The health check used `localhost`, which did not connect successfully to the interface on which Nginx was listening inside the container. The health-check URL was changed to the explicit IPv4 loopback address `127.0.0.1`, and the Nginx container was recreated so that the updated configuration would take effect. After the change, Docker reported the Nginx container as `healthy`, while the public application, health, and readiness endpoints continued returning `HTTP 200 OK`.
+
+The issue was resolved by correcting the Nginx health-check target and recreating the container with `docker compose up -d --force-recreate nginx`. Recovery was validated through `docker compose ps`, Docker health inspection, the Nginx health endpoint, and the application readiness endpoint. The container status changed from `unhealthy` to `healthy`, and all service endpoints continued operating normally.
+
+Identified and resolved an Nginx health-check false negative by comparing customer-facing endpoints with Docker health logs, isolating an internal probe connection failure, correcting the health-check target, and validating container recovery.
+
+
+
+
+
+
+
+
+
