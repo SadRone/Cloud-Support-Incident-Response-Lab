@@ -1,0 +1,17 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python syntax
+        run: python -m compileall app
+      - name: Validate Docker Compose
+        run: docker compose config
+      - name: Build application image
+        run: docker compose build app

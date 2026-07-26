@@ -1,0 +1,4 @@
+services:
+  nginx:
+    volumes:
+      - ./nginx/nginx.conf.broken:/etc/nginx/nginx.conf:ro

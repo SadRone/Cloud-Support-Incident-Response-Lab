@@ -1,0 +1,31 @@
+worker_processes auto;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    access_log /dev/stdout;
+    error_log /dev/stderr notice;
+
+    upstream cloud_app {
+        # Deliberate incident: the application actually listens on port 5000.
+        server app:5999;
+    }
+
+    server {
+        listen 80;
+        server_name _;
+
+        location = /nginx-health {
+            add_header Content-Type text/plain;
+            return 200 'nginx up but upstream is misconfigured\n';
+        }
+
+        location / {
+            proxy_pass http://cloud_app;
+            proxy_connect_timeout 2s;
+            proxy_read_timeout 5s;
+        }
+    }
+}

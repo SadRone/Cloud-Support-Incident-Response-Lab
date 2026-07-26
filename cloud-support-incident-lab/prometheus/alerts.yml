@@ -1,0 +1,47 @@
+groups:
+  - name: cloud-support-lab
+    rules:
+      - alert: ApplicationMetricsDown
+        expr: up{job="app"} == 0
+        for: 20s
+        labels:
+          severity: critical
+        annotations:
+          summary: Application metrics endpoint is unreachable
+          description: Prometheus cannot scrape the app container for more than 20 seconds.
+
+      - alert: PublicReadinessEndpointDown
+        expr: probe_success{instance="http://nginx/ready"} == 0
+        for: 20s
+        labels:
+          severity: critical
+        annotations:
+          summary: Public readiness endpoint is failing
+          description: Nginx, the application, or Redis may be unavailable or misconfigured.
+
+      - alert: RedisDependencyUnavailable
+        expr: app_dependency_up{dependency="redis"} == 0
+        for: 15s
+        labels:
+          severity: warning
+        annotations:
+          summary: Redis dependency is unavailable
+          description: The app cannot reach Redis. Check container status, DNS, network, and logs.
+
+      - alert: ElevatedHttp5xxRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[1m])) > 0.05
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: Elevated HTTP 5xx response rate
+          description: More than 0.05 server errors per second were observed for 30 seconds.
+
+      - alert: HighP95Latency
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[2m]))) > 1.5
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: High p95 application latency
+          description: p95 request latency has exceeded 1.5 seconds for 30 seconds.
